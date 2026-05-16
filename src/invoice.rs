@@ -77,6 +77,7 @@ impl From<GenerateArgs> for Invoice {
     fn from(args: GenerateArgs) -> Self {
         let mut invoice = Invoice::default();
 
+        invoice.title = args.title;
         if let Some(v) = args.id {
             invoice.id = v;
         }

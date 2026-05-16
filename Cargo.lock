@@ -404,6 +404,7 @@ dependencies = [
  "krilla",
  "serde",
  "serde_json",
+ "ttf-parser",
 ]
 
 [[package]]

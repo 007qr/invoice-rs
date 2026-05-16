@@ -7,7 +7,8 @@ use clap::{Parser, Subcommand};
 use invoice::Invoice;
 use krilla::Document;
 use krilla::color::rgb;
-use krilla::geom::{PathBuilder, Point};
+use krilla::geom::{PathBuilder, Point, Size, Transform};
+use krilla::image::Image;
 use krilla::num::NormalizedF32;
 use krilla::page::PageSettings;
 use krilla::paint::{Fill, Stroke};
@@ -83,6 +84,21 @@ fn main() {
     }
 }
 
+fn text_width(font_bytes: &[u8], text: &str, size_pt: f32) -> f32 {
+    let face = ttf_parser::Face::parse(font_bytes, 0).expect("parse font");
+    let upem = face.units_per_em() as f32;
+    let scale = size_pt / upem;
+    let mut width = 0.0_f32;
+    for ch in text.chars() {
+        if let Some(gid) = face.glyph_index(ch) {
+            if let Some(adv) = face.glyph_hor_advance(gid) {
+                width += adv as f32 * scale;
+            }
+        }
+    }
+    width
+}
+
 fn fill(r: u8, g: u8, b: u8) -> Fill {
     Fill {
         paint: rgb::Color::new(r, g, b).into(),
@@ -101,18 +117,15 @@ fn handle_generate(args: GenerateArgs) {
 
     // Fonts: load the original Inter TTFs directly. krilla handles subsetting
     // and FontDescriptor scaling correctly, so no preprocessing needed.
-    let regular = Font::new(
-        Arc::new(fs::read("./Inter/Inter Hinted for Windows/Desktop/Inter-Regular.ttf").unwrap())
-            .into(),
-        0,
-    )
-    .expect("load Inter-Regular");
-    let bold = Font::new(
-        Arc::new(fs::read("./Inter/Inter Hinted for Windows/Desktop/Inter-Bold.ttf").unwrap())
-            .into(),
-        0,
-    )
-    .expect("load Inter-Bold");
+    let regular_bytes =
+        fs::read("./Inter/Inter Hinted for Windows/Desktop/Inter-Regular.ttf").unwrap();
+    let medium_bytes =
+        fs::read("./Inter/Inter Hinted for Windows/Desktop/Inter-Medium.ttf").unwrap();
+    let bold_bytes = fs::read("./Inter/Inter Hinted for Windows/Desktop/Inter-Bold.ttf").unwrap();
+
+    let regular = Font::new(Arc::new(regular_bytes.clone()).into(), 0).expect("load Inter-Regular");
+    let medium = Font::new(Arc::new(medium_bytes).into(), 0).expect("load Inter-Medium");
+    let bold = Font::new(Arc::new(bold_bytes).into(), 0).expect("load Inter-Bold");
 
     let mut document = Document::new();
     let mut page = document.start_page_with(PageSettings::from_wh(page_w, page_h).unwrap());
@@ -124,7 +137,33 @@ fn handle_generate(args: GenerateArgs) {
 
     // 1. "From" line — 12pt, dark grey.
     y += 12.0; // baseline drop for 12pt
-    surface.set_fill(Some(fill(55, 55, 55)));
+    // If logo available then show it at top
+    if !invoice.logo.is_empty() {
+        let bytes = fs::read(&invoice.logo).expect("read logo");
+        let data = Arc::new(bytes).into();
+        let lower = invoice.logo.to_ascii_lowercase();
+        let image = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+            Image::from_jpeg(data, false).expect("decode jpeg logo")
+        } else {
+            Image::from_png(data, false).expect("decode png logo")
+        };
+
+        let (iw, ih) = image.size();
+        let max_h = 35.0_f32;
+        let scale = (max_h / ih as f32).min(1.0);
+        let draw_w = iw as f32 * scale;
+        let draw_h = ih as f32 * scale;
+
+        surface.push_transform(&Transform::from_translate(margin, y - 12.0));
+        surface.draw_image(image, Size::from_wh(draw_w, draw_h).unwrap());
+        surface.pop();
+
+        // Push the rest of the layout below the logo.
+        y += draw_h + 8.0;
+    }
+
+    y += 8.0;
+    surface.set_fill(Some(fill(100, 100, 100)));
     surface.draw_text(
         Point::from_xy(margin, y),
         regular.clone(),
@@ -134,14 +173,13 @@ fn handle_generate(args: GenerateArgs) {
         TextDirection::Auto,
     );
 
-    // 2. Horizontal rule — half content width, light grey.
+    // 2. Horizontal rule — matches the width of the "From" text above it.
     y += 30.0;
-    let content_w = page_w - 2.0 * margin;
-    let half_w = content_w / 2.0;
+    let from_w = text_width(&regular_bytes, &invoice.from, 13.0);
     let rule = {
         let mut pb = PathBuilder::new();
         pb.move_to(margin, y);
-        pb.line_to(margin + half_w, y);
+        pb.line_to(margin + from_w, y);
         pb.finish().unwrap()
     };
     surface.set_fill(None);
@@ -213,7 +251,7 @@ fn handle_generate(args: GenerateArgs) {
 
     // Header row.
     y += 80.0;
-    surface.set_fill(Some(fill(55, 55, 55)));
+    surface.set_fill(Some(fill(150, 150, 150)));
     for (x, label) in [
         (col_item, "ITEM"),
         (col_qty, "QTY"),
@@ -222,8 +260,8 @@ fn handle_generate(args: GenerateArgs) {
     ] {
         surface.draw_text(
             Point::from_xy(x, y),
-            regular.clone(),
-            9.0,
+            medium.clone(),
+            10.0,
             label,
             false,
             TextDirection::Auto,
@@ -273,17 +311,42 @@ fn handle_generate(args: GenerateArgs) {
     }
 
     if invoice.discount > 0.0 {
-        rows.insert(rows.len() - 2, ("Discount", format!("{:.2}", invoice.discount)))
+        rows.insert(
+            rows.len() - 2,
+            ("Discount", format!("{:.2}", invoice.discount)),
+        )
     }
 
-    y += 240.0;
+    y += 24.0 + 240.0;
+    // Notes
+    surface.set_fill(Some(fill(150, 150, 150)));
+    surface.draw_text(
+        Point::from_xy(margin, y),
+        medium.clone(),
+        10.0,
+        "Notes",
+        false,
+        TextDirection::Auto,
+    );
+
+    surface.set_fill(Some(fill(0, 0, 0)));
+    surface.draw_text(
+        Point::from_xy(margin, y + 20.0),
+        medium.clone(),
+        10.0,
+        &invoice.note,
+        false,
+        TextDirection::Auto,
+    );
+
+    y -= 24.0;
     for (label, value) in rows {
         y += 24.0;
-        surface.set_fill(Some(fill(75, 75, 75)));
+        surface.set_fill(Some(fill(150, 150, 150)));
         surface.draw_text(
             Point::from_xy(405.0, y),
-            regular.clone(),
-            8.0,
+            medium.clone(),
+            10.0,
             label,
             false,
             TextDirection::Auto,
@@ -292,24 +355,56 @@ fn handle_generate(args: GenerateArgs) {
         surface.set_fill(Some(fill(0, 0, 0)));
         if matches!(label, "Total") {
             surface.draw_text(
-                Point::from_xy(455.0, y),
+                Point::from_xy(475.0, y),
                 bold.clone(),
-                11.0,
+                10.0,
                 &value,
                 false,
                 TextDirection::Auto,
             );
         } else {
             surface.draw_text(
-                Point::from_xy(455.0, y),
+                Point::from_xy(475.0, y),
                 regular.clone(),
-                11.0,
+                10.0,
                 &value,
                 false,
                 TextDirection::Auto,
             );
         }
     }
+
+    let footer_y = page_h - margin;
+    let footer_label = format!("Invoice #{}", invoice.id);
+    let label_w = text_width(&regular_bytes, &footer_label, 10.0);
+    let gap = 8.0_f32;
+
+    surface.set_stroke(None);
+    surface.set_fill(Some(fill(100, 100, 100)));
+    surface.draw_text(
+        Point::from_xy(margin, footer_y),
+        regular.clone(),
+        10.0,
+        &footer_label,
+        false,
+        TextDirection::Auto,
+    );
+
+    let rule_y = footer_y - 3.5;
+    let rule_start = margin + label_w + gap;
+    let footer_rule = {
+        let mut pb = PathBuilder::new();
+        pb.move_to(rule_start, rule_y);
+        pb.line_to(page_w - margin, rule_y);
+        pb.finish().unwrap()
+    };
+    surface.set_fill(None);
+    surface.set_stroke(Some(Stroke {
+        paint: rgb::Color::new(225, 225, 225).into(),
+        width: 1.0,
+        ..Default::default()
+    }));
+    surface.draw_path(&footer_rule);
 
     surface.finish();
     page.finish();
