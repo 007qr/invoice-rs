@@ -61,7 +61,7 @@ That writes `acme-001.pdf` next to your terminal. If you skip `--output`, the fi
 
 ## What it looks like
 
-The layout is intentionally minimal: sender at the top, a thin divider, the title and invoice number, a "BILL TO" block, then a borderless items table with QTY / RATE / AMOUNT columns, and a Subtotal / Total / Due Date summary at the bottom.
+<img src="./static/invoice.png">
 
 ## Known limits
 
